@@ -6,6 +6,14 @@
 
 #include "WiFiManager.h"
 #include "configManager.h"
+#include "helpers.h"
+
+// State machine
+#define SM_IDLE                 0
+#define SM_START                1
+#define SM_WAIT_1000            2
+#define SM_WAIT_2000            3
+#define SM_CONNECT_OR_TIME_OUT  4
 
 //create global object
 WifiManager WiFiManager;
@@ -14,43 +22,59 @@ WifiManager WiFiManager;
 void WifiManager::begin(char const *apName, unsigned long newTimeout)
 {
     captivePortalName = apName;
+    captivePortalEnabled = true;
     timeout = newTimeout;
+
+    beginLoopState = SM_START;
+    connectNewWifiLoopState = SM_IDLE;
+}
+
+void WifiManager::beginSTA(unsigned long newTimeout)
+{
+    timeout = newTimeout;
+    captivePortalEnabled = false;
     
-    WiFi.mode(WIFI_STA);
-    WiFi.persistent(true);
-    
-    //set static IP if entered
-    ip = IPAddress(configManager.internal.ip);
-    gw = IPAddress(configManager.internal.gw);
-    sub = IPAddress(configManager.internal.sub);
-    dns = IPAddress(configManager.internal.dns);
+    beginLoopState = SM_START;
+    connectNewWifiLoopState = SM_IDLE;
+}
 
-    if (ip.isSet() || gw.isSet() || sub.isSet() || dns.isSet())
-    {
-        Serial.println(PSTR("Using static IP"));
-        WiFi.config(ip, gw, sub, dns);
-    }
+//
+bool WifiManager::STAEnabled() {
+    //1 and 3 have STA enabled
+    return (wifi_get_opmode() & 1) != 0;
+}
 
-    if (WiFi.SSID() != "")
-    {
-        //trying to fix connection in progress hanging
-        ETS_UART_INTR_DISABLE();
-        wifi_station_disconnect();
-        ETS_UART_INTR_ENABLE();
-        WiFi.begin();
-    }
+bool WifiManager::IsConnectionTimedOut() {
 
-    if (waitForConnectResult(timeout) == WL_CONNECTED)
-    {
-        //connected
-        Serial.println(PSTR("Connected to stored WiFi details"));
-        Serial.println(WiFi.localIP());
-    }
-    else
-    {
-        //captive portal
-        startCaptivePortal(captivePortalName);
-    }
+    //1 and 3 have STA enabled
+    if(!STAEnabled())
+        return true;
+
+    return millis() - STAStartInstant >= timeout;
+}
+
+bool WifiManager::IsConnectionInProgress() {
+
+    if(!STAEnabled())
+        return false;
+
+    if(IsConnectionTimedOut())
+        return false;
+
+    int8_t result = WiFi.status();
+
+    return result == WL_DISCONNECTED || result == WL_NO_SSID_AVAIL;
+}
+
+bool WifiManager::IsConnectionSuccessful() {
+
+    if(!STAEnabled())
+        return false;
+
+    if(IsConnectionTimedOut())
+        return false;
+
+    return WiFi.status() == WL_CONNECTED;
 }
 
 //Upgraded default waitForConnectResult function to incorporate WL_NO_SSID_AVAIL, fixes issue #122
@@ -94,7 +118,7 @@ void WifiManager::forget()
 
 //function to request a connection to new WiFi credentials
 void WifiManager::setNewWifi(String newSSID, String newPass)
-{    
+{
     ssid = newSSID;
     pass = newPass;
     ip = IPAddress();
@@ -102,7 +126,7 @@ void WifiManager::setNewWifi(String newSSID, String newPass)
     gw = IPAddress();
     dns = IPAddress();
 
-    reconnect = true;
+    connectNewWifiLoopState = SM_START;
 }
 
 //function to request a connection to new WiFi credentials
@@ -115,7 +139,7 @@ void WifiManager::setNewWifi(String newSSID, String newPass, String newIp, Strin
     gw.fromString(newGw);
     dns.fromString(newDns);
 
-    reconnect = true;
+    connectNewWifiLoopState = SM_START;
 }
 
 //function to connect to new WiFi credentials
@@ -181,8 +205,156 @@ void WifiManager::connectNewWifi(String newSSID, String newPass)
     }
 }
 
+//function to connect to new WiFi credentials
+void WifiManager::connectNewWifiLoop()
+{
+    switch(connectNewWifiLoopState){
+
+        case SM_START: 
+            connectNewWifiStartInstant = millis();
+            connectNewWifiLoopState = SM_WAIT_1000;
+            break;
+
+        case SM_WAIT_1000: 
+            if(millis() - connectNewWifiStartInstant < 1000)
+                break;
+
+            //set static IP or zeros if undefined    
+            WiFi.config(ip, gw, sub, dns);
+
+            //fix for auto connect racing issue
+            if((WiFi.status() == WL_CONNECTED && (WiFi.SSID() == ssid) && (ip.v4() == configManager.internal.ip) && (dns.v4() == configManager.internal.dns)))
+            {
+                connectNewWifiLoopState = SM_IDLE;
+                break;
+            }
+            
+            //trying to fix connection in progress hanging
+            ETS_UART_INTR_DISABLE();
+            wifi_station_disconnect();
+            ETS_UART_INTR_ENABLE();
+
+            WiFi.begin(ssid.c_str(), pass.c_str(), 0, NULL, true);
+            connectNewWifiStartInstant = millis();
+            connectNewWifiLoopState = SM_WAIT_2000;
+            break;
+
+        case SM_WAIT_2000: 
+            if(millis() - connectNewWifiStartInstant < 2000)
+                break;
+            connectNewWifiLoopState = SM_CONNECT_OR_TIME_OUT;
+            break;
+
+        case SM_CONNECT_OR_TIME_OUT:
+            
+            if(IsConnectionInProgress())
+                break;
+
+            connectNewWifiLoopState = SM_IDLE;
+
+            if(IsConnectionSuccessful())
+            {
+                if (inCaptivePortal)
+                    stopCaptivePortal();
+                
+                _PL(F("New connection successful"));
+                _PL(WiFi.localIP());
+
+                //store IP address in EEProm
+                storeToEEPROM();
+
+                if (_newwificallback != NULL)
+                    _newwificallback();
+            }
+            else
+                _PL(F("New connection unsuccessful"));
+
+            break;
+
+        case SM_IDLE://Do nothing
+            break;
+
+        default: 
+            _PL("Unknown state: " + String(connectNewWifiLoopState));
+    }
+}
+
+//function to connect to new WiFi credentials
+void WifiManager::beginLoop()
+{
+    switch(beginLoopState)
+    {
+        case SM_START: 
+
+            WiFi.mode(WIFI_STA);
+            WiFi.persistent(true);
+            
+            //set static IP if entered
+            ip = IPAddress(configManager.internal.ip);
+            gw = IPAddress(configManager.internal.gw);
+            sub = IPAddress(configManager.internal.sub);
+            dns = IPAddress(configManager.internal.dns);
+
+            _PL(F("Static IP data"));
+            _PP(F("IP: ")); _PL(ip.toString());
+            _PP(F("Gateway: ")); _PL(gw.toString());
+            _PP(F("Sub: ")); _PL(sub.toString());
+            _PP(F("DNS: ")); _PL(dns.toString());
+
+            if (ip.isSet() || gw.isSet() || sub.isSet() || dns.isSet())
+            {
+                _PL(F("Using static IP"));
+                WiFi.config(ip, gw, sub, dns);
+            }
+
+            if (WiFi.SSID() != "")
+            {
+                //trying to fix connection in progress hanging
+                ETS_UART_INTR_DISABLE();
+                wifi_station_disconnect();
+                ETS_UART_INTR_ENABLE();
+                WiFi.begin();
+            }
+
+            _PP(F("Trying to connect WiFi: ")); _PL(WiFi.SSID());
+            
+            beginLoopState = SM_CONNECT_OR_TIME_OUT;
+            break;
+
+        case SM_CONNECT_OR_TIME_OUT:
+            
+            if(IsConnectionInProgress())
+                break;
+
+            beginLoopState = SM_IDLE;
+
+            if(IsConnectionSuccessful())
+            {
+                _PL(F("Connected to stored WiFi details"));
+                _PL(WiFi.localIP());
+
+                if (_newwificallback != NULL)
+                    _newwificallback();
+            }
+            else
+            {
+                //captive portal
+                if(captivePortalEnabled)
+                    startCaptivePortal(captivePortalName);
+            }
+
+            break;
+
+        case SM_IDLE://Do nothing
+            break;
+
+        default: 
+            _PL("Unknown state: " + String(beginLoopState));
+    }
+}
+
 //function to start the captive portal
-void WifiManager::startCaptivePortal(char const *apName)
+void WifiManager::startCaptivePortal(char const *apName, char const *apPass)
 {
     WiFi.persistent(false);
     // disconnect sta, start ap
@@ -190,7 +362,7 @@ void WifiManager::startCaptivePortal(char const *apName)
     WiFi.mode(WIFI_AP);
     WiFi.persistent(true);
 
-    WiFi.softAP(apName);
+    WiFi.softAP(apName, apPass);
 
     dnsServer = new DNSServer();
 
@@ -198,10 +370,9 @@ void WifiManager::startCaptivePortal(char const *apName)
     dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
     dnsServer->start(53, "*", WiFi.softAPIP());
 
-    Serial.println(PSTR("Opened a captive portal"));
-    Serial.println(PSTR("192.168.4.1"));
+    _PL(F("Opened a captive portal"));
+    _PL(F("192.168.4.1"));
     inCaptivePortal = true;
-
 }
 
 //function to stop the captive portal
@@ -242,12 +413,8 @@ void WifiManager::loop()
         dnsServer->processNextRequest();
     }
 
-    if (reconnect)
-    {
-        connectNewWifi(ssid, pass);
-        reconnect = false;
-    }
-    
+    beginLoop();
+    connectNewWifiLoop();
 }
 
 //update IP address in EEPROM

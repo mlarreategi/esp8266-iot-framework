@@ -18,22 +18,37 @@ private:
     IPAddress dns;
     bool reconnect = false;
     bool inCaptivePortal = false;
+    bool captivePortalEnabled = false;
     char const *captivePortalName;
     unsigned long timeout = 60000;
-    
-    void startCaptivePortal(char const *apName);
+
+    unsigned long STAStartInstant = 0;
+    unsigned long connectNewWifiStartInstant = 0;
+    uint8_t connectNewWifiLoopState = 0;
+    uint8_t beginLoopState = 0;
+
+    void startCaptivePortal(char const *apName, char const *apPass = "");
     void stopCaptivePortal();
     void connectNewWifi(String newSSID, String newPass);    
     void storeToEEPROM();
     int8_t waitForConnectResult(unsigned long timeoutLength);
+
+    bool STAEnabled();
+    void connectNewWifiLoop();
+    void beginLoop();
+
     std::function<void()> _forgetwificallback;
     std::function<void()> _newwificallback;    
 
 public : 
-    void begin(char const *apName, unsigned long newTimeout = 60000);
+    void begin(char const *apName, unsigned long newTimeout = 20000);
+    void beginSTA(unsigned long newTimeout = 20000);
     void loop();
     void forget();
     bool isCaptivePortal();
+    bool IsConnectionInProgress();
+    bool IsConnectionTimedOut();
+    bool IsConnectionSuccessful();
     String SSID();
     void setNewWifi(String newSSID, String newPass);
     void setNewWifi(String newSSID, String newPass, String newIp, String newSub, String newGw, String newDns);

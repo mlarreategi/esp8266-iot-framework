@@ -7,9 +7,6 @@
 //data that needs to be persisted for other parts of the framework
 
 #define SIZE_INTERNAL 32 //allocate 32 bytes to have room for future expansion
-//#define SIZE_INTERNAL 96 //allocate 32 bytes to have room for future expansion
-
-//#define MAX_SIZE_PERSISTED_STRING 32
 
 struct internalData
 {
@@ -17,8 +14,6 @@ struct internalData
     uint32_t gw;
     uint32_t sub;
     uint32_t dns;
-//    char SSID[MAX_SIZE_PERSISTED_STRING];
-//    char password[MAX_SIZE_PERSISTED_STRING];
 };
 
 class config
