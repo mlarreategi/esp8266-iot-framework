@@ -40,7 +40,8 @@ private:
     std::function<void()> _forgetwificallback;
     std::function<void()> _newwificallback;    
 
-public : 
+public :
+    WifiManager();
     void begin(char const *apName, unsigned long newTimeout = 20000);
     void beginSTA(unsigned long newTimeout = 20000);
     void loop();

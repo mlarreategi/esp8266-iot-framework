@@ -18,6 +18,13 @@
 //create global object
 WifiManager WiFiManager;
 
+WifiManager::WifiManager()
+{
+    captivePortalEnabled = false;
+    beginLoopState = SM_IDLE;
+    connectNewWifiLoopState = SM_IDLE;
+}
+
 //function to call in setup
 void WifiManager::begin(char const *apName, unsigned long newTimeout)
 {
@@ -210,6 +217,9 @@ void WifiManager::connectNewWifiLoop()
 {
     switch(connectNewWifiLoopState){
 
+        case SM_IDLE://Do nothing
+            break;
+            
         case SM_START: 
             connectNewWifiStartInstant = millis();
             connectNewWifiLoopState = SM_WAIT_1000;
@@ -271,11 +281,8 @@ void WifiManager::connectNewWifiLoop()
 
             break;
 
-        case SM_IDLE://Do nothing
-            break;
-
         default: 
-            _PL("Unknown state: " + String(connectNewWifiLoopState));
+            _PL("Unknown state in 'connectNewWifiLoop': " + String(connectNewWifiLoopState));
     }
 }
 
@@ -284,6 +291,9 @@ void WifiManager::beginLoop()
 {
     switch(beginLoopState)
     {
+        case SM_IDLE://Do nothing
+            break;
+            
         case SM_START: 
 
             WiFi.mode(WIFI_STA);
@@ -345,11 +355,8 @@ void WifiManager::beginLoop()
 
             break;
 
-        case SM_IDLE://Do nothing
-            break;
-
         default: 
-            _PL("Unknown state: " + String(beginLoopState));
+            _PL("Unknown state in 'beginLoop': " + String(beginLoopState));
     }
 }
 
