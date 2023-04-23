@@ -294,8 +294,9 @@ void WifiManager::beginLoop()
         case SM_IDLE://Do nothing
             break;
             
-        case SM_START: 
+        case SM_START:
 
+            STAStartInstant = millis();
             WiFi.mode(WIFI_STA);
             WiFi.persistent(true);
             
